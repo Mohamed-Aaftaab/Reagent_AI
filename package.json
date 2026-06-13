@@ -2,7 +2,7 @@
   "name": "reagent",
   "private": true,
   "workspaces": ["apps/*"],
-  "packageManager": "npm@10.8.1",
+  "packageManager": "pnpm@9.1.0",
   "scripts": {
     "dev": "turbo dev",
     "build": "turbo build"
