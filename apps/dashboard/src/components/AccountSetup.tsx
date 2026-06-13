@@ -14,13 +14,13 @@ export function AccountSetup({ onAccountReady }: { onAccountReady: (addr: string
   async function createSmartAccount() {
     setLoading(true);
     try {
-      if (!window.ethereum) throw new Error("MetaMask not found");
+      if (!(window as any).ethereum) throw new Error("MetaMask not found");
 
-      const [address] = await window.ethereum.request({ method: "eth_requestAccounts" });
+      const [address] = await (window as any).ethereum.request({ method: "eth_requestAccounts" });
 
       // Automatically prompt MetaMask to switch to Base Sepolia (chainId 84532 -> 0x14a34)
       try {
-        await window.ethereum.request({
+        await (window as any).ethereum.request({
           method: "wallet_switchEthereumChain",
           params: [{ chainId: "0x14a34" }],
         });
@@ -28,7 +28,7 @@ export function AccountSetup({ onAccountReady }: { onAccountReady: (addr: string
         // Error 4902 indicates that the chain has not been added to MetaMask.
         if (switchError.code === 4902) {
           try {
-            await window.ethereum.request({
+            await (window as any).ethereum.request({
               method: "wallet_addEthereumChain",
               params: [
                 {
@@ -61,10 +61,11 @@ export function AccountSetup({ onAccountReady }: { onAccountReady: (addr: string
       const walletClient = createWalletClient({
         account: address as `0x${string}`,
         chain: baseSepolia,
-        transport: custom(window.ethereum),
+        transport: custom((window as any).ethereum),
       });
 
       const account = await toMetaMaskSmartAccount({
+        // @ts-ignore - viem version mismatch in SAK types
         client: publicClient,
         implementation: Implementation.Hybrid,
         deployParams: [address, [], [], []],
