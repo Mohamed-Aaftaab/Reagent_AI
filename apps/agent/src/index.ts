@@ -121,8 +121,9 @@ app.post("/api/webhook", (req, res) => {
 
 
 
-const server = app.listen(4000, () => {
-  console.log("Agent Server running on :4000");
+const PORT = process.env.PORT || 4000;
+const server = app.listen(PORT, () => {
+  console.log(`Agent Server running on :${PORT}`);
   console.log("Agent Session Account:", sessionAccount.address);
   console.log(`[1Shot] Using relayer: ${ONE_SHOT_RELAYER} (chainId ${RELAY_CHAIN_ID})`);
 
