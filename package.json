@@ -1,0 +1,21 @@
+{
+  "name": "reagent",
+  "private": true,
+  "workspaces": ["apps/*"],
+  "packageManager": "npm@10.8.1",
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build"
+  },
+  "devDependencies": {
+    "turbo": "^2.x",
+    "typescript": "^5.x"
+  },
+  "dependencies": {
+    "@metamask/smart-accounts-kit": "^1.6.0",
+    "@tanstack/react-query": "^5.101.0",
+    "lucide-react": "^1.18.0",
+    "viem": "^2.52.2",
+    "wagmi": "^3.6.16"
+  }
+}

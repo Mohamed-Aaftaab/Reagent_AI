@@ -1,0 +1,21 @@
+{
+  "delegations": {
+    "0x583e8d27a18d931da234c2d75f36a3ff8c0627aa": {
+      "delegation": {
+        "delegate": "0x659A0aE49fa4f0f7E1Ed6F407B735287B50F60AB",
+        "delegator": "0x583e8d27a18D931dA234C2D75f36a3FF8c0627AA",
+        "authority": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "caveats": [
+          {
+            "enforcer": "0x2DbF1eab62768134BBA672ed0bEb1BfEAE1a8a61",
+            "terms": "0x000000000000000000000000036cbd53842c5426634e7929541ec2318f3dcf7e00000000000000000000000000000000000000000000000000000000004c4b40",
+            "args": "0x"
+          }
+        ],
+        "salt": "0x14fe890bfb277e7b172cc439c36c6c495a0e3a6d4f063b2dba260e80bc371d5f"
+      },
+      "signature": "0x0d7e69e5a0892e071852fbf04eeb8e0acd3b3f20b3e76d8b8fd92c62468e03bb5c9096f61acd7acfe3fb3697695c8d65404d7f37e78d1f7bd4f66ce4b7c244fb1b"
+    }
+  },
+  "subDelegations": {}
+}

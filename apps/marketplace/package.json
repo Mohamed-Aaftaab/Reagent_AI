@@ -1,0 +1,26 @@
+{
+  "name": "marketplace",
+  "module": "index.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "npx tsx --env-file=.env src/index.ts"
+  },
+
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6"
+  },
+  "peerDependencies": {
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@x402/core": "^2.15.0",
+    "@x402/evm": "^2.15.0",
+    "@x402/express": "^2.15.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "viem": "^2.52.2"
+  }
+}

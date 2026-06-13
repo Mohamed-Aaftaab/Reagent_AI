@@ -1,0 +1,26 @@
+# Reagent — Monorepo .gitignore
+
+# Environment files — NEVER commit private keys or API keys
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+.next/
+build/
+
+# Bun
+bun.lockb
+bun.lock
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

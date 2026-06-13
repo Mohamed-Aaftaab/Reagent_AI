@@ -1,0 +1,5 @@
+minimumReleaseAgeExclude:
+  - '@x402/core@2.15.0'
+  - '@x402/evm@2.15.0'
+  - '@x402/express@2.15.0'
+  - '@x402/extensions@2.15.0'

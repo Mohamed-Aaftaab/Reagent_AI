@@ -1,0 +1,29 @@
+{
+  "name": "agent",
+  "module": "index.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "npx tsx --env-file=.env src/index.ts"
+  },
+
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/ws": "^8.18.1"
+  },
+  "peerDependencies": {
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@metamask/smart-accounts-kit": "^1.6.0",
+    "@x402/core": "^2.15.0",
+    "@x402/evm": "^2.15.0",
+    "@x402/fetch": "^2.15.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "viem": "^2.52.2",
+    "ws": "^8.21.0"
+  }
+}
