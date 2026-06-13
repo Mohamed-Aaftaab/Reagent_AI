@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "npx tsx --env-file=.env src/index.ts",
-    "start": "npx tsx --env-file=.env src/index.ts"
+    "start": "npx tsx src/index.ts"
   },
 
   "private": true,
