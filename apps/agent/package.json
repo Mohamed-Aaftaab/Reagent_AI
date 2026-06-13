@@ -3,7 +3,8 @@
   "module": "index.ts",
   "type": "module",
   "scripts": {
-    "dev": "npx tsx --env-file=.env src/index.ts"
+    "dev": "npx tsx --env-file=.env src/index.ts",
+    "start": "npx tsx --env-file=.env src/index.ts"
   },
 
   "private": true,
