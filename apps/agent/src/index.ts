@@ -519,39 +519,45 @@ wss.on("connection", (ws) => {
         });
         safeSendBuffered({ type: "tx_update", event: { taskId: relayTaskId, status: "Submitted" } });
 
-        // Poll status after 3s — also attempt on-chain receipt verification (C6)
+        // Poll status every 3s for up to 30s to get the transaction hash
         if (relayTaskId) {
-          setTimeout(async () => {
-            try {
-              const status = await getRelayStatus(relayTaskId!);
-              const taskState = status?.status || status?.task?.taskState;
-              log("INFO", "1shot", `Task ${relayTaskId} status: ${taskState}`);
-              const txHash = status?.transactionHash || status?.task?.transactionHash || status?.txHash;
+          (async () => {
+            let attempts = 0;
+            while (attempts < 10) {
+              attempts++;
+              try {
+                const status = await getRelayStatus(relayTaskId!);
+                const taskState = status?.status || status?.task?.taskState;
+                const txHash = status?.transactionHash || status?.task?.transactionHash || status?.txHash;
 
-              // ── C6: On-chain receipt verification ──────────────────────────
-              // After 1Shot says "Confirmed", verify the tx didn't revert on-chain.
-              if (txHash && (taskState === "Confirmed" || taskState === "confirmed")) {
-                try {
-                  const receipt = await publicClient.getTransactionReceipt({ hash: txHash as `0x${string}` });
-                  if (receipt.status === "reverted") {
-                    log("ERROR", "verify", `Tx ${txHash} confirmed by 1Shot but REVERTED on-chain!`);
-                    safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: "Reverted", txHash, verified: false } });
-                    return;
+                // ── C6: On-chain receipt verification ──────────────────────────
+                if (txHash && (taskState === "Confirmed" || taskState === "confirmed")) {
+                  try {
+                    const receipt = await publicClient.getTransactionReceipt({ hash: txHash as `0x${string}` });
+                    if (receipt.status === "reverted") {
+                      log("ERROR", "verify", `Tx ${txHash} confirmed by 1Shot but REVERTED on-chain!`);
+                      safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: "Reverted", txHash, verified: false } });
+                      return;
+                    }
+                    log("INFO", "verify", `Tx ${txHash} verified on-chain. Status: success ✅`);
+                    safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: taskState, txHash, verified: true } });
+                    return; // Stop polling, we got the final state
+                  } catch (receiptErr: any) {
+                    log("WARN", "verify", `Could not fetch receipt for ${txHash}: ${receiptErr.message}`);
+                    safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: taskState, txHash } });
+                    return; // Stop polling, we got the hash
                   }
-                  log("INFO", "verify", `Tx ${txHash} verified on-chain. Status: success ✅`);
-                  safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: taskState, txHash, verified: true } });
-                } catch (receiptErr: any) {
-                  // Receipt not yet mined — send status without verification flag
-                  log("WARN", "verify", `Could not fetch receipt for ${txHash}: ${receiptErr.message}`);
+                } else if (taskState === "Failed" || taskState === "Rejected" || taskState === "Cancelled") {
                   safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: taskState, txHash } });
+                  return; // Stop polling, terminal failure state
                 }
-              } else {
-                safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: taskState, txHash } });
+              } catch (e: any) {
+                log("WARN", "1shot", `Status poll failed for task ${relayTaskId} (non-fatal): ${e.message}`);
               }
-            } catch (e: any) {
-              log("WARN", "1shot", `Status poll failed for task ${relayTaskId} (non-fatal): ${e.message}`);
+              await new Promise(r => setTimeout(r, 3000));
             }
-          }, 3000);
+            log("WARN", "1shot", `Stopped polling task ${relayTaskId} after 30s`);
+          })();
         }
       } catch (relayErr: any) {
         log("ERROR", "1shot", `Relay failed after retry: ${relayErr.message}`);
