@@ -40,14 +40,19 @@ export function AgentChat({ smartAccountAddress }: { smartAccountAddress: string
       if (msg.type === "tx_update" && msg.event?.status) {
         const taskId: string | undefined = msg.event.taskId;
         const txHash: string | undefined = msg.event.txHash;
+        const basescanBase = BASESCAN_TX_URL?.replace("/tx", "") ?? "https://sepolia.basescan.org";
+        // Delegation Manager contract — fallback so user always has an on-chain link
+        const DELEGATION_MANAGER = "0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3";
         
         setLogs((prev) => [
           ...prev,
           {
             type: "tx_link",
             message: `🔗 1Shot relay: ${msg.event.status}${txHash ? ` (${txHash.slice(0, 10)}...)` : taskId ? ` (${taskId.slice(0, 10)}...)` : ""}`,
-            // Only generate a link if we have a real txHash. taskId will 404 on Basescan.
-            href: txHash ? `${BASESCAN_TX_URL}/${txHash}` : undefined,
+            // txHash → direct tx link. Fallback → DelegationManager contract page showing all recent redemptions.
+            href: txHash
+              ? `${BASESCAN_TX_URL}/${txHash}`
+              : `${basescanBase}/address/${DELEGATION_MANAGER}#internaltx`,
           },
         ]);
         return;

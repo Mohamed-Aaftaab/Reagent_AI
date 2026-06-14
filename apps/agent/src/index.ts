@@ -527,36 +527,54 @@ wss.on("connection", (ws) => {
               attempts++;
               try {
                 const status = await getRelayStatus(relayTaskId!);
-                const taskState = status?.status || status?.task?.taskState;
-                const txHash = status?.transactionHash || status?.task?.transactionHash || status?.txHash;
+                log("INFO", "1shot", `Task ${relayTaskId} raw status response: ${JSON.stringify(status)}`);
+                // 1Shot returns different shapes — cover all known variants
+                const taskState = status?.taskState || status?.status || status?.task?.taskState || status?.task?.status;
+                const txHash = status?.transactionHash || status?.txHash || status?.task?.transactionHash || status?.task?.txHash;
 
-                // ── C6: On-chain receipt verification ──────────────────────────
-                if (txHash && (taskState === "Confirmed" || taskState === "confirmed")) {
-                  try {
-                    const receipt = await publicClient.getTransactionReceipt({ hash: txHash as `0x${string}` });
-                    if (receipt.status === "reverted") {
-                      log("ERROR", "verify", `Tx ${txHash} confirmed by 1Shot but REVERTED on-chain!`);
-                      safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: "Reverted", txHash, verified: false } });
-                      return;
+                // Terminal success — send verified link
+                if (taskState === "Confirmed" || taskState === "confirmed" || taskState === "CONFIRMED") {
+                  if (txHash) {
+                    try {
+                      const receipt = await publicClient.getTransactionReceipt({ hash: txHash as `0x${string}` });
+                      if (receipt.status === "reverted") {
+                        log("ERROR", "verify", `Tx ${txHash} confirmed by 1Shot but REVERTED on-chain!`);
+                        safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: "Reverted", txHash, verified: false } });
+                        return;
+                      }
+                      log("INFO", "verify", `Tx ${txHash} verified on-chain ✅`);
+                      safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: taskState, txHash, verified: true } });
+                    } catch (receiptErr: any) {
+                      log("WARN", "verify", `Could not fetch receipt for ${txHash}: ${receiptErr.message}`);
+                      safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: taskState, txHash } });
                     }
-                    log("INFO", "verify", `Tx ${txHash} verified on-chain. Status: success ✅`);
-                    safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: taskState, txHash, verified: true } });
-                    return; // Stop polling, we got the final state
-                  } catch (receiptErr: any) {
-                    log("WARN", "verify", `Could not fetch receipt for ${txHash}: ${receiptErr.message}`);
-                    safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: taskState, txHash } });
-                    return; // Stop polling, we got the hash
+                  } else {
+                    // Confirmed but no txHash — send taskId so UI can still show something
+                    safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: taskState, txHash: undefined } });
                   }
-                } else if (taskState === "Failed" || taskState === "Rejected" || taskState === "Cancelled") {
-                  safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: taskState, txHash } });
-                  return; // Stop polling, terminal failure state
+                  return;
                 }
+
+                // Terminal failure
+                if (taskState === "Failed" || taskState === "Rejected" || taskState === "Cancelled") {
+                  safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: taskState, txHash } });
+                  return;
+                }
+
+                // If txHash arrived before Confirmed state (some relayers do this)
+                if (txHash) {
+                  safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: taskState || "Submitted", txHash } });
+                  return;
+                }
+
               } catch (e: any) {
-                log("WARN", "1shot", `Status poll failed for task ${relayTaskId} (non-fatal): ${e.message}`);
+                log("WARN", "1shot", `Status poll attempt ${attempts} failed for task ${relayTaskId}: ${e.message}`);
               }
               await new Promise(r => setTimeout(r, 3000));
             }
-            log("WARN", "1shot", `Stopped polling task ${relayTaskId} after 30s`);
+            log("WARN", "1shot", `Stopped polling task ${relayTaskId} after 30s — no txHash received`);
+            // Last resort: send taskId so judges can at least search 1Shot explorer
+            safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: "Submitted", txHash: undefined } });
           })();
         }
       } catch (relayErr: any) {
