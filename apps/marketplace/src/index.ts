@@ -135,7 +135,6 @@ const ROUTE_REQUIREMENTS: Record<string, { price: string; amount: string }> = {
 
 // USDC contract on Base Sepolia — single source of truth used throughout this file.
 // Update to the mainnet address when PAYMENT_NETWORK switches to eip155:8453.
-const USDC_BASE_SEPOLIA = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 
 // ── ERC-7710 Payment Intercept ───────────────────────────────────────────────
 // Requests that carry BOTH a delegation chain AND a payment signature have
@@ -196,7 +195,7 @@ app.use(async (req, res, next) => {
             const feeTimer = setTimeout(() => feeController.abort(), 10_000);
             let feeRes: Response;
             try {
-              feeRes = await fetch(`https://relayer.1shotapi.dev/relayers`, {
+              feeRes = await fetch(ONE_SHOT_RELAYER_URL, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -223,7 +222,7 @@ app.use(async (req, res, next) => {
               const capsTimer = setTimeout(() => capsController.abort(), 10_000);
               let capsRes: Response;
               try {
-                capsRes = await fetch(`https://relayer.1shotapi.dev/relayers`, {
+                capsRes = await fetch(ONE_SHOT_RELAYER_URL, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({
