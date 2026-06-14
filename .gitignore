@@ -24,3 +24,9 @@ bun.lock
 # OS
 .DS_Store
 Thumbs.db
+
+# Runtime session data — contains live delegation signatures, never commit
+apps/agent/delegations.json
+
+# Debug / scratch scripts — not for production
+apps/agent/test-1shot.js

@@ -26,7 +26,8 @@ export function DelegatePanel({ smartAccount }: { smartAccount: any }) {
     // until the browser's OS-level TCP timeout (~300s) fires.
     const probeController = new AbortController();
     const probeTimer = setTimeout(() => probeController.abort(), 5_000);
-    fetch(`http://localhost:4000/api/has-delegation?smartAccount=${smartAccount.address}`, {
+    const AGENT_URL = import.meta.env.VITE_AGENT_URL ?? "http://localhost:4000";
+    fetch(`${AGENT_URL}/api/has-delegation?smartAccount=${smartAccount.address}`, {
       signal: probeController.signal,
     })
       .then(r => r.json())
@@ -38,10 +39,15 @@ export function DelegatePanel({ smartAccount }: { smartAccount: any }) {
   async function createDelegation() {
     setLoading(true);
     try {
-      const agentAddress = (
-        import.meta.env.VITE_AGENT_SESSION_ADDRESS ||
-        "0x0000000000000000000000000000000000000000"
-      ) as `0x${string}`;
+      // Hard crash if the agent address is not configured — delegating to the
+      // zero address is a silent failure that allows no agent execution.
+      const agentAddress = import.meta.env.VITE_AGENT_SESSION_ADDRESS as `0x${string}`;
+      if (!agentAddress || agentAddress === "0x0000000000000000000000000000000000000000") {
+        throw new Error(
+          "VITE_AGENT_SESSION_ADDRESS is not set. " +
+          "Please add the agent session wallet address to your environment variables."
+        );
+      }
 
       // Generate a cryptographically random 32-byte salt for each delegation.
       // This prevents replay attacks and allows the user to re-delegate safely
@@ -84,7 +90,8 @@ export function DelegatePanel({ smartAccount }: { smartAccount: any }) {
         })),
       };
 
-      const res = await fetch("http://localhost:4000/api/store-delegation", {
+      const AGENT_URL = import.meta.env.VITE_AGENT_URL ?? "http://localhost:4000";
+      const res = await fetch(`${AGENT_URL}/api/store-delegation`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -112,7 +119,8 @@ export function DelegatePanel({ smartAccount }: { smartAccount: any }) {
   async function revokeDelegation() {
     setRevoking(true);
     try {
-      const res = await fetch("http://localhost:4000/api/revoke-delegation", {
+      const AGENT_URL = import.meta.env.VITE_AGENT_URL ?? "http://localhost:4000";
+      const res = await fetch(`${AGENT_URL}/api/revoke-delegation`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ smartAccount: smartAccount.address }),
