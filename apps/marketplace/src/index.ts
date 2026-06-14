@@ -14,12 +14,58 @@ import { protocolValidateHandler } from "./endpoints/protocol-validate.js";
 const NETWORK = process.env.PAYMENT_NETWORK ?? "eip155:84532";
 const PAY_TO = process.env.SELLER_ADDRESS || "0x0000000000000000000000000000000000000000";
 if (!process.env.SELLER_ADDRESS) {
-  console.warn("⚠️  WARNING: SELLER_ADDRESS is not set. All x402 payments will be sent to the zero address (burned). Set SELLER_ADDRESS in apps/marketplace/.env");
+  console.warn("\u26a0\ufe0f  WARNING: SELLER_ADDRESS is not set. All x402 payments will be sent to the zero address (burned). Set SELLER_ADDRESS in apps/marketplace/.env");
 }
 const FACILITATOR_URL = "https://tx-sentinel-base-sepolia.dev-api.cx.metamask.io/platform/v2/x402";
 
+// ── Chain / token config — env-var driven (M1, M2) ───────────────────────────
+// RELAY_CHAIN_ID drives which 1Shot relayer URL and chain params are used.
+// For mainnet: set RELAY_CHAIN_ID=8453 and USDC_ADDRESS=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+const RELAY_CHAIN_ID = process.env.RELAY_CHAIN_ID ?? "84532";
+const ONE_SHOT_RELAYER_URL = RELAY_CHAIN_ID === "8453"
+  ? "https://relayer.1shotapi.com/relayers"
+  : "https://relayer.1shotapi.dev/relayers";
+
+// USDC contract address — env-var driven, defaults to Base Sepolia.
+const USDC_BASE_SEPOLIA = (
+  process.env.USDC_ADDRESS ?? "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+);
+
 const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL });
 const app = express();
+
+// ── IP Rate Limiter helpers (M4) ──────────────────────────────────────────────
+const RATE_LIMIT_MAX = 10;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const ipRequestCounts = new Map<string, { count: number; resetAt: number }>();
+
+function getRealIp(req: any): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (forwarded) return (forwarded as string).split(",")[0].trim();
+  return req.socket?.remoteAddress ?? "unknown";
+}
+
+function isRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const entry = ipRequestCounts.get(ip);
+  if (!entry || now > entry.resetAt) {
+    ipRequestCounts.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return false;
+  }
+  entry.count++;
+  return entry.count > RATE_LIMIT_MAX;
+}
+
+// ── Idempotency Key Cache (M3) ────────────────────────────────────────────────
+const IDEMPOTENCY_TTL_MS = 5 * 60_000;
+const idempotencyCache = new Map<string, { status: number; body: any; expiresAt: number }>();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of idempotencyCache.entries()) {
+    if (now > entry.expiresAt) idempotencyCache.delete(key);
+  }
+}, 60_000);
 
 app.use(cors({ 
   exposedHeaders: ["PAYMENT-REQUIRED", "PAYMENT-RESPONSE"],
@@ -27,6 +73,40 @@ app.use(cors({
 }));
 app.use(express.json());
 
+// ── Rate limit middleware (M4) ───────────────────────────────────────────────
+app.use((req, res, next) => {
+  const ip = getRealIp(req);
+  if (isRateLimited(ip)) {
+    console.warn(`[rate-limit] ${ip} exceeded ${RATE_LIMIT_MAX} req/min on ${req.method} ${req.path}`);
+    return res.status(429).json({ error: "Rate limit exceeded. Max 10 requests per minute per IP." });
+  }
+  next();
+});
+
+// ── Idempotency middleware (M3) ──────────────────────────────────────────────
+app.use((req, res, next) => {
+  const idempotencyKey = req.headers["idempotency-key"] as string | undefined;
+  if (idempotencyKey && req.method === "POST") {
+    const cached = idempotencyCache.get(idempotencyKey);
+    if (cached && Date.now() < cached.expiresAt) {
+      console.log(`[idempotency] Replaying cached response for key: ${idempotencyKey}`);
+      return res.status(cached.status).json(cached.body);
+    }
+    // Attach the key to res.locals so route handlers can cache their response
+    res.locals.idempotencyKey = idempotencyKey;
+  }
+  next();
+});
+
+// Helper: cache a route response for idempotency replay
+function cacheIdempotentResponse(res: any, status: number, body: any) {
+  const key = res.locals.idempotencyKey;
+  if (key) {
+    idempotencyCache.set(key, { status, body, expiresAt: Date.now() + IDEMPOTENCY_TTL_MS });
+  }
+}
+
+// ── Delegation chain logger ──────────────────────────────────────────────────
 // Log the delegation chain header when present — proves A2A authority chain
 app.use((req, _res, next) => {
   const chain = req.headers["x-delegation-chain"];
@@ -123,7 +203,7 @@ app.use(async (req, res, next) => {
                   jsonrpc: "2.0",
                   id: 2,
                   method: "relayer_getFeeData",
-                  params: { chainId: "84532", token: USDC_BASE_SEPOLIA }
+                  params: { chainId: RELAY_CHAIN_ID, token: USDC_BASE_SEPOLIA }
                 }),
                 signal: feeController.signal,
               });
@@ -150,7 +230,7 @@ app.use(async (req, res, next) => {
                     jsonrpc: "2.0",
                     id: 1,
                     method: "relayer_getCapabilities",
-                    params: ["84532"]
+                    params: [RELAY_CHAIN_ID]
                   }),
                   signal: capsController.signal,
                 });
@@ -162,7 +242,7 @@ app.use(async (req, res, next) => {
                 console.log(`[Marketplace 1Shot] capsRes failed: ${capsRes.status} ${await capsRes.text()}`);
               } else {
                 const capsData = await capsRes.json();
-                const feeCollector = capsData?.result?.["84532"]?.feeCollector || capsData?.["84532"]?.feeCollector;
+                const feeCollector = capsData?.result?.[RELAY_CHAIN_ID]?.feeCollector || capsData?.[RELAY_CHAIN_ID]?.feeCollector;
                 console.log(`[Marketplace 1Shot] capsData:`, JSON.stringify(capsData));
                 console.log(`[Marketplace 1Shot] feeCollector: ${feeCollector}, feeAmount: ${feeAmount}`);
                 if (feeCollector && feeAmount > 0n) {
@@ -189,7 +269,7 @@ app.use(async (req, res, next) => {
             throw new Error("Missing delegationChain for 1Shot relay");
           }
 
-          const settlePromise = fetch("https://relayer.1shotapi.dev/relayers", {
+          const settlePromise = fetch(ONE_SHOT_RELAYER_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -197,7 +277,7 @@ app.use(async (req, res, next) => {
               id: 3,
               method: "relayer_send7710Transaction",
               params: {
-                chainId: "84532",
+                chainId: RELAY_CHAIN_ID,
                 transactions: [{
                   executions,
                   permissionContext,

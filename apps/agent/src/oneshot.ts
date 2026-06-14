@@ -200,3 +200,21 @@ export async function getRelayStatus(taskId: string) {
   if (json.error) throw new Error(`1Shot getStatus error: ${json.error.message}`);
   return json.result;
 }
+
+/**
+ * C7 — Single retry wrapper for relay7710Transaction.
+ * Waits retryDelayMs before the second attempt.
+ * Callers can catch the final error and surface it to the user.
+ */
+export async function relay7710TransactionWithRetry(
+  params: Parameters<typeof relay7710Transaction>[0],
+  retryDelayMs = 3000
+): Promise<{ TaskId: string }> {
+  try {
+    return await relay7710Transaction(params);
+  } catch (firstErr: any) {
+    console.warn(`[1Shot] First relay attempt failed (${firstErr.message}). Retrying in ${retryDelayMs}ms...`);
+    await new Promise(r => setTimeout(r, retryDelayMs));
+    return relay7710Transaction(params); // second attempt — throws naturally on failure
+  }
+}

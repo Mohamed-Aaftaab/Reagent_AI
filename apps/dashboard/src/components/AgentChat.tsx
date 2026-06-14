@@ -11,8 +11,11 @@ import { Bot, Send } from "lucide-react";
 // crashes or the WebSocket drops mid-task.
 const THINKING_TIMEOUT_MS = 90_000; // 90 seconds
 
-// Block explorer for the active chain. Update to basescan.org for mainnet.
-const BASESCAN_TX_URL = "https://sepolia.basescan.org/tx";
+// Block explorer for the active chain.
+// Set VITE_BASESCAN_URL in environment variables to switch to mainnet:
+//   Testnet: https://sepolia.basescan.org/tx (default)
+//   Mainnet: https://basescan.org/tx
+const BASESCAN_TX_URL = import.meta.env.VITE_BASESCAN_URL ?? "https://sepolia.basescan.org/tx";
 
 export function AgentChat({ smartAccountAddress }: { smartAccountAddress: string | null }) {
   const [task, setTask] = useState("");

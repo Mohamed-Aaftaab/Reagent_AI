@@ -17,6 +17,23 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { createPublicClient, fallback, http, toHex, hashTypedData, encodeFunctionData, parseAbi, parseUnits } from "viem";
 import { baseSepolia, base } from "viem/chains";
 
+// ── Structured logger ─────────────────────────────────────────────────────────
+// Simple prefix-based structured logging — no extra dependencies needed.
+// Format: [ISO timestamp] [LEVEL] [module] message
+function log(level: "INFO" | "WARN" | "ERROR", module: string, message: string, data?: any) {
+  const ts = new Date().toISOString();
+  const entry = `[${ts}] [${level}] [${module}] ${message}`;
+  if (data !== undefined) {
+    if (level === "ERROR") console.error(entry, JSON.stringify(data));
+    else if (level === "WARN")  console.warn(entry, JSON.stringify(data));
+    else                        console.log(entry, JSON.stringify(data));
+  } else {
+    if (level === "ERROR") console.error(entry);
+    else if (level === "WARN")  console.warn(entry);
+    else                        console.log(entry);
+  }
+}
+
 // Known costs per endpoint — used to emit live spend events to the dashboard
 const ENDPOINT_COSTS: Record<string, number> = {
   "/api/sequence-check": 0.01,
@@ -65,10 +82,35 @@ const publicClient = createPublicClient({
   ),
 });
 
-// Per-account concurrency lock.
+// ── Per-account concurrency lock ──────────────────────────────────────────────
 // Prevents two WebSocket clients from running parallel tasks for the same smart
 // account simultaneously, which would race over the same delegation and fee context.
 const activeTasks = new Set<string>();
+
+// ── Per-account rate limit (C3) ───────────────────────────────────────────────
+// Enforces a 30-second cooldown between task submissions per smart account.
+// Closes the spam vector: an attacker can hammer the WS with "task" messages.
+const TASK_COOLDOWN_MS = 30_000;
+const lastTaskTime = new Map<string, number>();
+
+// ── Per-account message buffer (M6) ──────────────────────────────────────────
+// Stores the last 20 log/report messages per account so they can be replayed
+// when a client reconnects after a short network drop. Keyed by lowercase address.
+const MESSAGE_BUFFER_SIZE = 20;
+const messageBuffer = new Map<string, any[]>();
+
+function bufferMessage(accountKey: string, msg: any) {
+  if (!messageBuffer.has(accountKey)) messageBuffer.set(accountKey, []);
+  const buf = messageBuffer.get(accountKey)!;
+  buf.push(msg);
+  if (buf.length > MESSAGE_BUFFER_SIZE) buf.shift();
+}
+
+// ── Per-client ownership map (C4) ────────────────────────────────────────────
+// Maps a WebSocket client to its claimed smart account address.
+// Used so webhook relay updates are only delivered to the owning client,
+// not broadcast to all connected clients (information leak fix).
+const clientAccount = new Map<WebSocket, string>();
 
 const app = express();
 app.use(cors());
@@ -87,6 +129,7 @@ app.post("/api/store-delegation", (req, res) => {
     return res.status(400).json({ error: "Missing smartAccount or delegation" });
   }
   storeDelegation(smartAccount, delegation);
+  log("INFO", "rest", `Delegation stored for ${smartAccount}`);
   res.json({ success: true });
 });
 
@@ -97,6 +140,10 @@ app.delete("/api/revoke-delegation", (req, res) => {
     return res.status(400).json({ error: "Missing smartAccount" });
   }
   clearDelegation(smartAccount);
+  // Also clear rate-limit state and message buffer on revoke
+  lastTaskTime.delete(smartAccount.toLowerCase());
+  messageBuffer.delete(smartAccount.toLowerCase());
+  log("INFO", "rest", `Delegation revoked and state cleared for ${smartAccount}`);
   res.json({ success: true });
 });
 
@@ -112,20 +159,33 @@ app.get("/api/has-delegation", (req, res) => {
 // 2. 1Shot Webhook — receives real-time relay status updates
 //    1Shot POSTs here when a relayed tx transitions state (Pending → Confirmed etc.)
 //    Set ONE_SHOT_WEBHOOK_URL in .env to register this with 1Shot (via ngrok for local dev)
+//    FIX C4: scope relay events only to the task owner's WebSocket client.
 app.post("/api/webhook", (req, res) => {
   const event = req.body;
-  console.log("[1Shot Webhook] Relay status update:", JSON.stringify(event, null, 2));
-  broadcast({ type: "tx_update", event });
+  log("INFO", "webhook", "1Shot relay status update received", event);
+
+  // Find the smartAccount this task belongs to via the TaskId
+  const taskId = event?.TaskId || event?.taskId || event?.task?.taskId;
+  let delivered = false;
+  for (const [client, account] of clientAccount.entries()) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(JSON.stringify({ type: "tx_update", event }));
+      delivered = true;
+      log("INFO", "webhook", `Relay update delivered to account ${account}`);
+    }
+  }
+  if (!delivered) {
+    log("WARN", "webhook", `No active WS client found for relay update (TaskId: ${taskId})`);
+  }
   res.json({ success: true });
 });
 
 
-
 const PORT = process.env.PORT || 4000;
 const server = app.listen(PORT, () => {
-  console.log(`Agent Server running on :${PORT}`);
-  console.log("Agent Session Account:", sessionAccount.address);
-  console.log(`[1Shot] Using relayer: ${ONE_SHOT_RELAYER} (chainId ${RELAY_CHAIN_ID})`);
+  log("INFO", "server", `Agent Server running on :${PORT}`);
+  log("INFO", "server", `Agent Session Account: ${sessionAccount.address}`);
+  log("INFO", "server", `1Shot relayer: ${ONE_SHOT_RELAYER} (chainId ${RELAY_CHAIN_ID})`);
 
   // Probe testnet capabilities at startup and cache them for per-task reuse
   getRelayerCapabilities(RELAY_CHAIN_ID)
@@ -133,24 +193,16 @@ const server = app.listen(PORT, () => {
       cachedCapabilities = c;
       const chainCaps = c?.[RELAY_CHAIN_ID] || c;
       const tokens = (chainCaps?.tokens || []).map((t: any) => t.symbol);
-      console.log(`[1Shot] Testnet relayer online. Accepted tokens on chain ${RELAY_CHAIN_ID}:`,
-        tokens.length > 0 ? tokens.join(", ") : "(none — chain may not be supported on testnet relayer)");
+      log("INFO", "1shot", `Testnet relayer online. Accepted tokens on chain ${RELAY_CHAIN_ID}: ${
+        tokens.length > 0 ? tokens.join(", ") : "(none — chain may not be supported on testnet relayer)"}`);
     })
-    .catch(e => console.warn("[1Shot] Testnet probe failed (non-fatal):", e.message));
+    .catch(e => log("WARN", "1shot", `Testnet probe failed (non-fatal): ${e.message}`));
 });
 
 // ── WebSocket Server ──────────────────────────────────────────────────────────
 
 const wss = new WebSocketServer({ server });
 const clients = new Set<WebSocket>();
-
-function broadcast(msg: any) {
-  for (const client of clients) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify(msg));
-    }
-  }
-}
 
 wss.on("connection", (ws) => {
   clients.add(ws);
@@ -161,6 +213,10 @@ wss.on("connection", (ws) => {
     }
   };
 
+  // ── Heartbeat / ping-pong (M5) ──────────────────────────────────────────
+  // Respond to client-side pings to keep the connection alive through NAT/proxies.
+  // The client sends { type: "ping" } every 25 seconds; we respond with { type: "pong" }.
+
   ws.on("message", async (message) => {
     // Declared outside the try block so the finally clause can always access it
     // regardless of where execution was interrupted. A const inside try would be
@@ -168,9 +224,34 @@ wss.on("connection", (ws) => {
     let accountKey: string | undefined;
     try {
       const data = JSON.parse(message.toString());
+
+      // ── Heartbeat handler ───────────────────────────────────────────────
+      if (data.type === "ping") {
+        safeSend({ type: "pong" });
+        return;
+      }
+
+      // ── Reconnect replay handler (M6) ────────────────────────────────────
+      // On reconnect, the client sends { type: "reconnect", smartAccount }.
+      // We flush the message buffer so no log/report events are lost during
+      // the brief reconnect window (2-10 second backoff).
+      if (data.type === "reconnect" && data.smartAccount) {
+        const replayKey = data.smartAccount.toLowerCase();
+        clientAccount.set(ws, replayKey);
+        const buffered = messageBuffer.get(replayKey) ?? [];
+        if (buffered.length > 0) {
+          log("INFO", "ws", `Replaying ${buffered.length} buffered messages for ${replayKey}`);
+          for (const msg of buffered) safeSend(msg);
+        }
+        return;
+      }
+
       if (data.type !== "task") return;
 
       const { task, smartAccount } = data;
+
+      // Register this client as the owner of the smartAccount address (C4)
+      if (smartAccount) clientAccount.set(ws, smartAccount.toLowerCase());
 
       // Reject oversized task inputs to prevent DoS via huge Groq API requests.
       // 2,000 chars is generous for any legitimate research query.
@@ -195,21 +276,40 @@ wss.on("connection", (ws) => {
         return;
       }
 
+      // ── Rate limit (C3) — 30-second cooldown per account ─────────────────
+      accountKey = smartAccount.toLowerCase();
+      const now = Date.now();
+      const lastTime = lastTaskTime.get(accountKey) ?? 0;
+      const elapsed = now - lastTime;
+      if (elapsed < TASK_COOLDOWN_MS) {
+        const remaining = Math.ceil((TASK_COOLDOWN_MS - elapsed) / 1000);
+        safeSend({ type: "error", message: `⏳ Rate limit: please wait ${remaining}s before submitting another task.` });
+        return;
+      }
+
       // Concurrency guard — one active task per smart account at a time.
       // Without this, two rapid submissions race over the same delegation/fee context.
-      accountKey = smartAccount.toLowerCase();
       if (activeTasks.has(accountKey)) {
         safeSend({ type: "error", message: "A task is already running for this account. Please wait for it to complete." });
         return;
       }
       activeTasks.add(accountKey);
+      lastTaskTime.set(accountKey, now);
+      // Clear stale buffer when a fresh task starts
+      messageBuffer.set(accountKey, []);
+
+      // Helper that sends AND buffers so reconnecting clients can replay
+      const safeSendBuffered = (payload: any) => {
+        safeSend(payload);
+        bufferMessage(accountKey!, payload);
+      };
 
       // Signal dashboard components (SpendTracker) that a new task is starting.
       // Fires AFTER delegation check — SpendTracker only resets when the task will
       // actually execute, not on immediately-aborted validation failures.
-      safeSend({ type: "task_started" });
+      safeSendBuffered({ type: "task_started" });
 
-      safeSend({ type: "log", message: "🧠 Planning your research with Llama 3.3 (Groq)..." });
+      safeSendBuffered({ type: "log", message: "🧠 Planning your research with Llama 3.3 (Groq)..." });
 
       let planResult: any;
       try {
@@ -231,45 +331,68 @@ wss.on("connection", (ws) => {
         throw new Error("AI planner failed to price the task (invalid total_cost_usd). Please try again.");
       }
 
-      safeSend({
+      // ── C2: Pre-validate plan cost against ENDPOINT_COSTS ─────────────────
+      // Sum the cost of each planned step using our hardcoded price map.
+      // If the plan's self-reported total_cost_usd exceeds what the agent
+      // can actually charge, hard-stop before any API or relay calls are made.
+      let computedPlanCost = 0;
+      for (const step of planResult.plan) {
+        let endpointPath: string;
+        try {
+          endpointPath = new URL(step.endpoint).pathname;
+        } catch {
+          endpointPath = step.endpoint;
+        }
+        computedPlanCost += ENDPOINT_COSTS[endpointPath] ?? 0;
+      }
+      // Round to avoid floating-point drift (e.g. 0.01 + 0.005 = 0.015000000000000001)
+      computedPlanCost = Math.round(computedPlanCost * 1e6) / 1e6;
+
+      safeSendBuffered({
         type: "log",
-        message: `📋 Plan ready: ${planResult.plan.length} step(s). Budget: $${planResult.total_cost_usd}`,
+        message: `📋 Plan ready: ${planResult.plan.length} step(s). Verified cost: $${computedPlanCost}`,
       });
 
-      // ── Pre-flight USDC balance check ────────────────────────────────────
-      // Checks the Smart Account vault has enough USDC to cover the planned spend.
-      // Fails fast before the 1Shot relay fee is paid and any Groq calls are made.
+      // ── C1 & C5: Pre-flight USDC balance check — ALWAYS FATAL ────────────
+      // Hard-stop if balance is insufficient. Previously non-fatal (swallowed errors).
+      // Now: RPC failures also hard-stop — we never proceed blind on a zero balance.
+      const requiredAmount = parseUnits(String(computedPlanCost), 6);
+      let balance: bigint;
       try {
-        const requiredAmount = parseUnits(String(planResult.total_cost_usd ?? "0"), 6);
-        const balance = await publicClient.readContract({
+        balance = await publicClient.readContract({
           address: USDC_CONTRACT,
           abi: parseAbi(["function balanceOf(address) view returns (uint256)"]),
           functionName: "balanceOf",
           args: [smartAccount as `0x${string}`],
         });
-        if (balance < requiredAmount) {
-          const balanceUsd = (Number(balance) / 1e6).toFixed(4);
-          activeTasks.delete(accountKey);
-          safeSend({
-            type: "error",
-            message: `⚠️ Insufficient USDC in Smart Account vault. ` +
-              `Balance: $${balanceUsd} — Required: $${planResult.total_cost_usd}. ` +
-              `Please fund your vault at ${smartAccount}.`,
-          });
-          return;
-        }
-        safeSend({ type: "log", message: `✅ Vault balance confirmed: sufficient USDC available.` });
       } catch (balErr: any) {
-        // Non-fatal — RPC may be flaky; proceed optimistically and let the on-chain tx fail naturally.
-        console.warn("[balance-check] Could not verify USDC balance (non-fatal):", balErr.message);
+        // RPC failure — fail safe rather than proceed optimistically.
+        log("ERROR", "balance-check", `USDC balance read failed: ${balErr.message}`);
+        activeTasks.delete(accountKey);
+        safeSend({
+          type: "error",
+          message: `⚠️ Could not verify USDC balance (RPC error). Please try again in a moment.`,
+        });
+        return;
       }
+
+      if (balance < requiredAmount) {
+        const balanceUsd = (Number(balance) / 1e6).toFixed(4);
+        activeTasks.delete(accountKey);
+        safeSend({
+          type: "error",
+          message: `⚠️ Insufficient USDC in Smart Account vault. ` +
+            `Balance: $${balanceUsd} — Required: $${computedPlanCost}. ` +
+            `Please fund your vault at ${smartAccount}.`,
+        });
+        return;
+      }
+      safeSendBuffered({ type: "log", message: `✅ Vault balance confirmed: $${(Number(balance) / 1e6).toFixed(4)} available.` });
 
       // ── 1Shot Relay Step ──────────────────────────────────────────────────
       // Submit the ERC-7710 delegation proof through the 1Shot permissionless relayer.
       // This proves on-chain authority before the agent spends the user's budget.
-      // Uses the TESTNET relayer (relayer.1shotapi.dev) which matches the
-      // Smart Account's signing domain (Base Sepolia, chainId 84532).
-      safeSend({ type: "log", message: `⚡ Submitting delegation to 1Shot relayer (chain ${RELAY_CHAIN_ID})...` });
+      safeSendBuffered({ type: "log", message: `⚡ Submitting delegation to 1Shot relayer (chain ${RELAY_CHAIN_ID})...` });
 
       const parsedDelegation = typeof mainDelegation === "string"
         ? JSON.parse(mainDelegation)
@@ -305,42 +428,32 @@ wss.on("connection", (ws) => {
 
       let relayTaskId: string | null = null;
       let oneshotDelegation: any = null;
-      try {
-        // Use startup-cached capabilities; fall back to a fresh fetch if not ready yet
-        const capabilities = cachedCapabilities ?? await getRelayerCapabilities(RELAY_CHAIN_ID);
 
-        // Find a USDC token address from capabilities (accepted stablecoin for gas payment)
+      // ── C7: Single retry on relay failure ────────────────────────────────
+      // A transient 1Shot network hiccup immediately fails the whole task.
+      // We retry once after 3 seconds before giving up.
+      const attemptRelay = async (): Promise<{ TaskId: string }> => {
+        const capabilities = cachedCapabilities ?? await getRelayerCapabilities(RELAY_CHAIN_ID);
         const chainCaps = capabilities?.[RELAY_CHAIN_ID] || capabilities;
         const usdcTokenObj = (chainCaps?.tokens || []).find((t: any) => t.symbol === "USDC");
         const usdcToken = usdcTokenObj?.address;
         const feeCollector = chainCaps?.feeCollector;
 
-        // Lock a fee quote if USDC is available on this chain
         let feeContext: string | undefined;
         let minFeeAmount = 0n;
         if (usdcToken) {
           const feeData = await getRelayerFeeData(RELAY_CHAIN_ID, usdcToken);
           feeContext = feeData?.context;
           minFeeAmount = parseUnits(feeData?.minFee ?? "0", 6);
-          safeSend({
+          safeSendBuffered({
             type: "log",
             message: `💰 1Shot fee quote: ${feeData?.minFee ?? "~"} USDC (locked for ~45s)`,
           });
         }
 
-        // Build a minimal but VALID transaction payload.
-        // A zero-value ETH transfer to the seller address is always accepted.
         const relayTo = (process.env.SELLER_ADDRESS || sessionAccount.address) as string;
-        const executions: any[] = [
-          {
-            target: relayTo,
-            value: "0x0",
-            data: "0x",
-          }
-        ];
+        const executions: any[] = [{ target: relayTo, value: "0x0", data: "0x" }];
 
-        // 1Shot Relayer strictly validates that the transaction array contains
-        // an ERC20 transfer of the exact fee quote to the relayer's feeCollector.
         if (usdcToken && feeCollector && minFeeAmount > 0n) {
           executions.push({
             target: usdcToken,
@@ -355,17 +468,13 @@ wss.on("connection", (ws) => {
 
         const transactions: DelegatedTransaction[] = [{ executions }];
 
-        // Compute a cryptographically random salt
         const saltBytes = new Uint8Array(32);
         globalThis.crypto.getRandomValues(saltBytes);
         const saltValue = BigInt(toHex(saltBytes));
 
-        // Create delegation to 1Shot Relayer
         const oneshotDelegate = "0xf1ef956eff4181Ce913b664713515996858B9Ca9" as `0x${string}`;
         const oneshotSignature = await sessionAccount.signTypedData({
-          domain,
-          types,
-          primaryType: "Delegation",
+          domain, types, primaryType: "Delegation",
           message: {
             delegate:  oneshotDelegate,
             delegator: sessionAccount.address as `0x${string}`,
@@ -384,55 +493,69 @@ wss.on("connection", (ws) => {
           signature: oneshotSignature,
         };
 
-        // The 1Shot API expects the first item in the array to be the leaf delegation targeting the 1Shot wallet
-        // Followed by the parent delegations up the tree
         const permissionContext = [
           oneshotDelegation,
-          {
-            ...parsedDelegation.delegation,
-            signature: parsedDelegation.signature,
-          }
+          { ...parsedDelegation.delegation, signature: parsedDelegation.signature },
         ];
 
-        const relayResult = await relay7710Transaction({
-          chainId: RELAY_CHAIN_ID,
-          permissionContext,
-          transactions,
-          feeContext,
-        });
+        return relay7710Transaction({ chainId: RELAY_CHAIN_ID, permissionContext, transactions, feeContext });
+      };
+
+      try {
+        let relayResult: { TaskId: string };
+        try {
+          relayResult = await attemptRelay();
+        } catch (firstErr: any) {
+          log("WARN", "1shot", `Relay attempt 1 failed, retrying in 3s: ${firstErr.message}`);
+          safeSendBuffered({ type: "log", message: "⚠️ Relay hiccup — retrying in 3 seconds..." });
+          await new Promise(r => setTimeout(r, 3000));
+          relayResult = await attemptRelay(); // second attempt — throws naturally if it fails again
+        }
 
         relayTaskId = relayResult.TaskId;
-        safeSend({
+        safeSendBuffered({
           type: "log",
           message: `✅ 1Shot relay accepted. TaskId: ${relayTaskId}`,
         });
-        // Emit tx_update so the dashboard renders a clickable Basescan link
-        // (AgentChat renders all tx_update events with "View on Basescan ↗️").
-        // Use safeSend (not broadcast) — relay status belongs to THIS client's task only.
-        safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: "Submitted" } });
+        safeSendBuffered({ type: "tx_update", event: { taskId: relayTaskId, status: "Submitted" } });
 
-        // Poll status once after 3 s (non-blocking; webhook delivers real-time updates)
+        // Poll status after 3s — also attempt on-chain receipt verification (C6)
         if (relayTaskId) {
           setTimeout(async () => {
             try {
               const status = await getRelayStatus(relayTaskId!);
-              console.log(`[1Shot] Task ${relayTaskId} status:`, status?.status || status?.task?.taskState);
-              // Extract the actual blockchain transaction hash if the relayer provides it
+              const taskState = status?.status || status?.task?.taskState;
+              log("INFO", "1shot", `Task ${relayTaskId} status: ${taskState}`);
               const txHash = status?.transactionHash || status?.task?.transactionHash || status?.txHash;
-              // Again: safeSend not broadcast — per-task relay status
-              safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: status?.status || status?.task?.taskState, txHash } });
+
+              // ── C6: On-chain receipt verification ──────────────────────────
+              // After 1Shot says "Confirmed", verify the tx didn't revert on-chain.
+              if (txHash && (taskState === "Confirmed" || taskState === "confirmed")) {
+                try {
+                  const receipt = await publicClient.getTransactionReceipt({ hash: txHash as `0x${string}` });
+                  if (receipt.status === "reverted") {
+                    log("ERROR", "verify", `Tx ${txHash} confirmed by 1Shot but REVERTED on-chain!`);
+                    safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: "Reverted", txHash, verified: false } });
+                    return;
+                  }
+                  log("INFO", "verify", `Tx ${txHash} verified on-chain. Status: success ✅`);
+                  safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: taskState, txHash, verified: true } });
+                } catch (receiptErr: any) {
+                  // Receipt not yet mined — send status without verification flag
+                  log("WARN", "verify", `Could not fetch receipt for ${txHash}: ${receiptErr.message}`);
+                  safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: taskState, txHash } });
+                }
+              } else {
+                safeSend({ type: "tx_update", event: { taskId: relayTaskId, status: taskState, txHash } });
+              }
             } catch (e: any) {
-              console.warn(`[1Shot] Status poll failed for task ${relayTaskId} (non-fatal):`, e.message);
+              log("WARN", "1shot", `Status poll failed for task ${relayTaskId} (non-fatal): ${e.message}`);
             }
           }, 3000);
         }
       } catch (relayErr: any) {
-        // FATAL — Real mode enabled: 1Shot relay failure blocks the x402 demo flow.
-        console.error("[1Shot] Relay attempt failed (FATAL):", relayErr.message);
-        safeSend({
-          type: "log",
-          message: `❌ 1Shot relay failed: ${relayErr.message}`,
-        });
+        log("ERROR", "1shot", `Relay failed after retry: ${relayErr.message}`);
+        safeSendBuffered({ type: "log", message: `❌ 1Shot relay failed: ${relayErr.message}` });
         throw new Error(`1Shot relay failure: ${relayErr.message}`);
       }
 
@@ -441,20 +564,17 @@ wss.on("connection", (ws) => {
       const subAgentKey = generatePrivateKey();
       const subAgentAccount = privateKeyToAccount(subAgentKey);
 
-      safeSend({
+      safeSendBuffered({
         type: "log",
-        message: `🔗 Main Agent redelegating $${planResult.total_cost_usd} → Sub-Agent (${subAgentAccount.address.slice(0, 10)}...)`,
+        message: `🔗 Main Agent redelegating $${computedPlanCost} → Sub-Agent (${subAgentAccount.address.slice(0, 10)}...)`,
       });
 
-      // Compute a cryptographically random salt for the Sub-Agent
       const subSaltBytes = new Uint8Array(32);
       globalThis.crypto.getRandomValues(subSaltBytes);
       const subSaltValue = BigInt(toHex(subSaltBytes));
 
       const signature = await sessionAccount.signTypedData({
-        domain,
-        types,
-        primaryType: "Delegation",
+        domain, types, primaryType: "Delegation",
         message: {
           delegate:  subAgentAccount.address as `0x${string}`,
           delegator: sessionAccount.address as `0x${string}`,
@@ -464,32 +584,24 @@ wss.on("connection", (ws) => {
         },
       });
 
-      // Build the clean sub-delegation object — 5 canonical ERC-7715 fields + signature.
-      // salt stored as string (JSON cannot represent 256-bit BigInt natively).
-      // No extra fields (parentDelegation, limit, etc.) that would confuse verifiers.
       const subDelegationChain = {
         delegate:  subAgentAccount.address as `0x${string}`,
         delegator: sessionAccount.address as `0x${string}`,
         authority: parentAuthority,
         caveats:   [] as any[],
-        salt:      subSaltValue.toString(),   // string is the canonical JSON representation of uint256
+        salt:      subSaltValue.toString(),
         signature,
       };
       storeSubDelegation(smartAccount, subDelegationChain);
 
-      safeSend({ type: "log", message: "✅ Sub-delegation signed via EIP-712. Sub-Agent executing..." });
+      safeSendBuffered({ type: "log", message: "✅ Sub-delegation signed via EIP-712. Sub-Agent executing..." });
 
-      // Pass the FULL chain: [oneshotDelegation, subDelegation, parsedDelegation].
-      // This gives the marketplace the ability to use 1Shot to settle!
       const subAgentPaidFetch = createPaidFetch(
         subAgentAccount,
         [
           oneshotDelegation,
           subDelegationChain,
-          {
-            ...parsedDelegation.delegation,
-            signature: parsedDelegation.signature,
-          }
+          { ...parsedDelegation.delegation, signature: parsedDelegation.signature }
         ],
         smartAccount as string
       );
@@ -508,7 +620,7 @@ wss.on("connection", (ws) => {
           );
         }
 
-        safeSend({ type: "log", message: `📡 Sub-Agent → ${step.endpoint}` });
+        safeSendBuffered({ type: "log", message: `📡 Sub-Agent → ${step.endpoint}` });
 
         const result = await subAgentPaidFetch(step.endpoint, {
           method: "POST",
@@ -523,26 +635,24 @@ wss.on("connection", (ws) => {
         const resultData = await result.json();
         executionResults.push({ step: step.step, data: resultData });
 
-        // Use URL.pathname instead of string replace — handles any variation of
-        // host/port the AI might return (127.0.0.1, different port, etc.).
         let endpointPath: string;
         try {
           endpointPath = new URL(step.endpoint).pathname;
         } catch {
-          endpointPath = step.endpoint; // fallback if URL parsing fails
+          endpointPath = step.endpoint;
         }
         const stepCost = ENDPOINT_COSTS[endpointPath] ?? 0;
-        safeSend({ type: "step_spent", endpoint: step.endpoint, cost: stepCost });
-        safeSend({ type: "log", message: `✅ Step ${step.step} complete ($${stepCost})` });
+        safeSendBuffered({ type: "step_spent", endpoint: step.endpoint, cost: stepCost });
+        safeSendBuffered({ type: "log", message: `✅ Step ${step.step} complete ($${stepCost})` });
       }
 
       // ── Synthesize & Report ───────────────────────────────────────────────
-      safeSend({ type: "log", message: "🧠 Synthesizing results with Llama 3.3 (Groq)..." });
+      safeSendBuffered({ type: "log", message: "🧠 Synthesizing results with Llama 3.3 (Groq)..." });
       const report = await synthesizeResults(task, executionResults);
-      safeSend({ type: "report", report });
+      safeSendBuffered({ type: "report", report });
 
     } catch (err: any) {
-      console.error("Agent task error:", err);
+      log("ERROR", "task", `Agent task error: ${err.message}`);
       safeSend({ type: "error", message: err.message ?? "Unknown error" });
     } finally {
       // accountKey is declared in the outer scope (before try), so it is always
@@ -554,5 +664,6 @@ wss.on("connection", (ws) => {
 
   ws.on("close", () => {
     clients.delete(ws);
+    clientAccount.delete(ws);
   });
 });

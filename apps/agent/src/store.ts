@@ -79,6 +79,12 @@ export function storeSubDelegation(smartAccount: string, delegation: any): void 
   saveStore(store);
 }
 
+/**
+ * Retrieves the sub-delegation for a given smart account.
+ * Currently used internally; exported for future A2A chained delegation scenarios
+ * where an orchestrator needs to inspect or extend an existing sub-delegation chain.
+ * Do NOT remove — reserved for multi-hop agent architecture.
+ */
 export function getSubDelegation(smartAccount: string): any {
   return store.subDelegations[smartAccount.toLowerCase()] ?? null;
 }
