@@ -43,7 +43,7 @@ const ENDPOINT_COSTS: Record<string, number> = {
 
 // The only marketplace host the AI planner is authorised to call.
 // Any step.endpoint not in this set is rejected before execution (SSRF guard).
-const MARKETPLACE_BASE = "http://127.0.0.1:4402";
+const MARKETPLACE_BASE = process.env.MARKETPLACE_URL || "http://127.0.0.1:4402";
 const ALLOWED_ENDPOINTS = new Set([
   `${MARKETPLACE_BASE}/api/sequence-check`,
   `${MARKETPLACE_BASE}/api/reagent-price`,

@@ -4,6 +4,7 @@
   "workspaces": ["apps/*"],
   "packageManager": "pnpm@9.1.0",
   "scripts": {
+    "start": "node start.js",
     "dev": "turbo dev",
     "build": "turbo build"
   },

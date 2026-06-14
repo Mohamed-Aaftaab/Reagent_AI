@@ -54,6 +54,8 @@ function authHeader(): string {
 }
 
 export async function planResearchTask(task: string) {
+  const marketplaceBase = process.env.MARKETPLACE_URL || "http://127.0.0.1:4402";
+  
   const response = await fetchWithRetry(LLM_API, {
     method: "POST",
     headers: {
@@ -65,9 +67,9 @@ export async function planResearchTask(task: string) {
       messages: [{
         role: "system",
         content: `You are a lab research agent. Given a research task, decide which paid APIs to call and in what order. Available APIs:
-          - POST http://127.0.0.1:4402/api/sequence-check ($0.01) — validate primer/probe sequences. Input schema: { "sequences": [ { "sequence": "string", "type": "string" } ], "organism": "human" }
-          - POST http://127.0.0.1:4402/api/reagent-price ($0.005) — get reagent pricing. Input schema: { "reagents": [ "string" ], "vendor_preference": "any" }
-          - POST http://127.0.0.1:4402/api/protocol-validate ($0.02) — validate lab protocol. Input schema: { "protocol_text": "string", "instrument": "string" }
+          - POST ${marketplaceBase}/api/sequence-check ($0.01) — validate primer/probe sequences. Input schema: { "sequences": [ { "sequence": "string", "type": "string" } ], "organism": "human" }
+          - POST ${marketplaceBase}/api/reagent-price ($0.005) — get reagent pricing. Input schema: { "reagents": [ "string" ], "vendor_preference": "any" }
+          - POST ${marketplaceBase}/api/protocol-validate ($0.02) — validate lab protocol. Input schema: { "protocol_text": "string", "instrument": "string" }
           
           Respond ONLY with a STRICTLY valid JSON object matching this schema:
           { 
