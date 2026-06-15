@@ -217,7 +217,7 @@ export function AgentChat({ smartAccountAddress }: { smartAccountAddress: string
           <div className="relative">
             <Textarea
               className="min-h-[100px] resize-none pr-16 bg-white/5 border-white/10 focus-visible:ring-accent text-foreground placeholder:text-muted-foreground/50 rounded-xl"
-              placeholder="I'm setting up RT-qPCR to measure IL-6 expression... (Ctrl+Enter to send)"
+              placeholder="Type your research task here... (Ctrl+Enter to send)"
               value={task}
               onChange={(e) => setTask(e.target.value)}
               onKeyDown={handleKeyDown}
