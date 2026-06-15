@@ -6,7 +6,7 @@ export function HowItWorks() {
       <section className="page-hero">
         <p className="eyebrow"><span></span>How it Works</p>
         <h1>Three steps to <em>autonomy</em></h1>
-        <p>No seed phrases shared. No complex signing. From connecting your wallet to fully autonomous AI trading in under a minute.</p>
+        <p>No seed phrases shared. No complex signing. From connecting your wallet to fully autonomous AI research in under a minute.</p>
         <div className="page-actions">
           <Link className="button primary" to="/dashboard">Get Started</Link>
         </div>
@@ -50,9 +50,9 @@ export function HowItWorks() {
               and relays them via 1Shot. It stops when the budget is hit.
             </p>
             <div className="mini-ui seals">
-              <span>Swapped 1 USDC <b>Success</b></span>
-              <span>Swapped 2 USDC <b>Success</b></span>
-              <span>Remaining Budget: <b>$2.00</b></span>
+              <span>Paid /api/sequence-check <b>$0.01</b></span>
+              <span>Paid /api/protocol-validate <b>$0.01</b></span>
+              <span>Remaining Budget: <b>$4.98</b></span>
             </div>
           </article>
         </div>

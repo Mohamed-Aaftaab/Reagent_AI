@@ -26,7 +26,7 @@ export function Timeline() {
             <li><span>Phase 1</span> Smart Accounts & Delegation integration (Base Sepolia)</li>
             <li><span>Phase 2</span> Agent conversational interface and planning</li>
             <li><span>Phase 3</span> 1Shot API for sponsored gasless transactions</li>
-            <li><span>Phase 4</span> Custom NLP intent parsing for multi-step swaps</li>
+            <li><span>Phase 4</span> Expanded research APIs and multi-step autonomous pipelines</li>
           </ol>
         </div>
       </section>

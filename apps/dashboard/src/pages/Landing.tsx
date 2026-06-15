@@ -49,7 +49,7 @@ export function Landing() {
         </div>
         <div>
           <span>1Shot</span>
-          <strong>Paymaster Relayer</strong>
+          <strong>Permissionless Relayer</strong>
         </div>
       </section>
 
