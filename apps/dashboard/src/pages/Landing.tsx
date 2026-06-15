@@ -122,7 +122,8 @@ export function Landing() {
               to session keys representing the AI agent.
             </p>
             <dl>
-              <div><dt>Standard</dt><dd>ERC-4337</dd></div>
+              <div><dt>Smart Account</dt><dd>ERC-4337</dd></div>
+              <div><dt>Delegation</dt><dd>ERC-7710</dd></div>
               <div><dt>Signatures</dt><dd>ERC-1271</dd></div>
             </dl>
           </article>
@@ -135,6 +136,7 @@ export function Landing() {
               preventing the agent from spending a penny more.
             </p>
             <dl>
+              <div><dt>Standard</dt><dd>ERC-7710</dd></div>
               <div><dt>Allowance</dt><dd>Up to $5 USDC</dd></div>
               <div><dt>Timebox</dt><dd>Customizable</dd></div>
             </dl>
